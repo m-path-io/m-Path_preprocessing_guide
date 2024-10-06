@@ -54,8 +54,8 @@ To read the `basic.csv` as exported from m-Path, we can use the `read_mpath` fun
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) # sets working directory to file location
 
 data <- read_mpath(# reads data
-  file = "../read_mpath/example_dataset.csv", # path to the data (replace with own data if desired)
-  meta_data = "../read_mpath/meta.csv" # path to the metadata
+  file = "example_dataset.csv", # path to the data (replace with own data if desired)
+  meta_data = "meta.csv" # path to the metadata
 ) 
 ```
 
