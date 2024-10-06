@@ -1,0 +1,1065 @@
+---
+title: "Importing and preprocessing raw m-Path data"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+---
+
+## Study and data collection procedure
+
+This guide implements the preprocessing of an example dataset gathered with [m-Path](https://m-Path.io/landing/). m-Path is a platform that allows researchers to create and deploy Experience Sampling Method (ESM) studies. ESM studies are a type of longitudinal study where participants are prompted to answer questions about their emotions, activities, and context in real-time. \n
+
+The dataset consists of the resulting data from an ESM experiment, from 20 participants collected over the course of 10 days. Participants completed the following questionnaires:\n
+
+* Intake questionnaire: where participants consented to participate and filled the Neuroticism subscale of the Big Five Inventory (BFI) and the Satisfaction with Life Scale (SWLS).
+* Main questionnaire (administered 10 times per day): Participants answered questions about their emotions and activities.
+* Evening questionnaire (every evening): where participants  rated their emotions throughout the day.
+
+This guide is based on the steps in the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/).
+
+## Set up
+
+We will start by loading the packages that we will use in this analysis. Since this guide requires the installation of a good number of packages, the following code automatically installs packages that are not already installed, and then loads them. 
+
+```{r, warning=FALSE, message=FALSE}
+required_packages <- c("dplyr", "tidyr", "lubridate", "skimr", "esmtools", "lme4", "car", "ggplot2", "naniar", "visdat", "GGally", "ggalt", "rjson", "data.table", "mpathr")
+
+# checks which of the packages are installed and installs the ones that are not
+install.packages(setdiff(required_packages, rownames(installed.packages())))
+
+# loads all packages in the required_packages list
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+# create m-Path palettes (for plotting):
+theme_set(theme_bw())
+
+mpath_palette <- c("#2196F3", "#F33920", "#F4A222")
+dark_mpath_palette <- c("#087DDA", "#DA2006", "#DB8908")
+```
+
+# Step 1: Importing data and preliminary preprocessing
+
+In this step, we will import the data and perform some preliminary preprocessing. We first take a look at the data, and then we clean it by renaming columns and making composite variables. We then check for duplicated and missing variables, and finally reformat the time stamps and create new time variables.
+
+## Importing
+To read the `basic.csv` as exported from m-Path, we can use the `read_mpath` function, that takes as arguments the path to the data (`file`) and the path to the meta data (`meta_data`), and returns the data as a data frame. The metadata contains information about how the data should be read, this information is used by the `read-mpath` function to get the correct data types.
+
+```{r read m-Path data}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) # sets working directory to file location
+
+data <- read_mpath(# reads data
+  file = "../read_mpath/example_dataset.csv", # path to the data (replace with own data if desired)
+  meta_data = "../read_mpath/meta.csv" # path to the metadata
+) 
+```
+
+## Note: saving m-Path data
+
+The resulting data frame will contain columns with lists, which can be problematic when saving the data. To save the data, we suggest using either `fwrite` from the `data.table` package, or the `save` function.\n 
+
+If you want to save the data as a 'csv' to use it in another program, use `fwrite` from the `data.table` package:
+
+```{r saving data as a csv}
+fwrite(data, 
+       file = 'data.csv', # specify path
+       sep = ';', # separator between columns
+       sep2 = c('', ',', '')) # separator within list columns
+```
+
+Otherwise, if the data will be used in R, we suggest saving it as an R object:
+```{r saving data as an R object}
+save(data, 
+     file = 'data.RData') # specify path
+
+# to load the data back into R, use: load('data.RData')
+```
+
+## First glimpse
+We can first check the data to get a better idea of what we are working with. 
+
+**Meta-info of the ESM dataset.** 
+The `dataInfo()` function from the `esmtools` package provides some useful information, such as the number of columns and rows, the number of participants, the number of observations per participant, and the number of missing values.
+
+```{r print data info}
+dataInfo(file_path="../read_mpath/example_dataset.csv", 
+         read_fun = read.csv2,
+         idvar="connectionId", # specify the participant variable
+         timevar="timeStampSent" # specify the time variable
+         )
+```
+We can see that we have `r length(unique(data$connectionId))` participants, and we have `r nrow(data)/length(unique(data$connectionId))` observations per participant.
+
+We can also print the data and use the `skim()` function from the `skimr` package to get a summary of the data.
+
+```{r print data and skim}
+print(data) # prints first rows of df
+
+skim(data) # prints summary of df
+```
+From the output of the `skim` function, we can see that we don't have any missing values in `connectionId` (our participant identifier variable), and also in the time variable `timeStampSent`. But we have a lot of missing values in other variables. This is because each row corresponds to one beep, and since the data consists of three questionnaires, not all questions are answered in each beep.
+
+## Initial cleaning and column renaming
+Before continuing with the pre-processing, we will do some initial cleaning and make the columns more readable.
+```{r print colnames}
+colnames(data) # prints the column names
+```
+
+There are some columns that we will not need for our analysis (but may contain useful information in other cases). We can already remove them by using the `select()` function in the `dplyr` package. If we use the `-` sign before listing the columns, we select everything **except** those columns:
+
+```{r remove columns}
+data <- data %>%
+  select(-c(legacyCode, alias, initials, scheduledBeepId, 
+            sentBeepId, accountCode, reminderForOriginalSentBeepId, originalTimeStampSent, questionListLabel, timeZoneOffset, fromProtocolName, SWLS_intro_basic,
+            BFI_neuroticism_intro_basic, intake_outro_basic, main_outro_basic,
+            evening_questionnaire_warning_basic, evening_outro_basic)) # we provide the function with a vector with the column names we want to remove.
+```
+
+Note: in this case, we are removing the column `originalTimeStampSent` because in our experiment, we did not have reminders. In case of reminders, the `originalTimeStampSent` contains the time stamp for the first notification and `timeStampSent` contains the time stamp for the reminder. \n
+
+Once we have removed some columns, we can rename the rest. Since we are working with `r ncol(data)` columns, changing each column name manually would be very time-consuming. \n
+
+To avoid doing this, we may want to check the column names and see if there is a pattern that we can use to make our task easier. In this case, since our questionnaire was implemented in m-Path, the column names consist of the label we gave in questionnaire creation, as well as a suffix indicated the type of question (For example: `age_open` has the suffix `_open`). Knowing this, we can remove some of these suffixes in all the columns that have them.\n
+
+An example of this is the Multiple choice questions (that end in `_multipleChoice`). We can remove these using the `gsub()` function. In this function, we supply the column names, specify the pattern we want to replace (`_multipleChoice`), and the replacement (`""`, an empty string).
+
+```{r rename columns using gsub}
+colnames(data) <- colnames(data) %>%
+  gsub("_yesno$", "",  .) %>% # removes _yesno, but only if it is at the end of the string (using $) 
+  gsub("_multipleChoice", "", .) %>% # Remove _multipleChoice suffix
+  gsub("_sliderN.*", "", .) %>%  # This will remove _slider suffixes and everything that goes after (like: _sliderNegPos and _slider_NeutralPos)
+  gsub("_open", "", .) %>% # Remove _open
+  gsub("context_", "", .) # Remove context_ 
+  
+```
+
+**Warning**: cleaning column names in this way may result in duplicated column names For example: if there was a column called `slider_happy_sliderNegPos`, we would end up with two columns named `slider_happy`, because of the column `slider_happy_sliderNeutralPos`. This can be a problem, so it is important to be aware of this and maybe check for duplicated column names after cleaning them.
+
+```{r check for duplicated column names}
+# checking for duplicated column names
+names(data)[duplicated(names(data))] 
+```
+We have no duplicated column names as a result of the previous renaming.
+
+----
+
+Now, we have removed some suffixes and our column names are less cluttered. We can rename the rest of the columns manually with `rename()`. Note that this is not necessary, but we will use these renaming standards in this guide.
+
+```{r renaming columns manually}
+data <- data %>%
+  rename(participant = connectionId, # renaming connectionId to participant
+         gender = gender_index,
+         questionnaire = questionListName,
+         scheduled = timeStampScheduled,
+         sent = timeStampSent,
+         start = timeStampStart,
+         stop = timeStampStop,
+         step_count = step_count_steps,
+         phone_server_offset = deltaUTC,
+         evening_stressful = evening_yesno_stressful,
+         evening_positive = evening_yesno_positive
+         )
+```
+
+### Replace participant values with a participant number
+Our participant identifier is the column `participant`, which contains ids such as `r unique(data$participant)[1]`. We can replace these ids with a participant number that goes from 1 to the number of participants. \n
+
+But first, we should check that there are no `NA`s in this column:
+```{r Check for NAs in participant column}
+# first check that there are no missing values in the participant variable
+data %>%
+  summarize(missing_participant_value = sum(is.na(participant))) # cumputes the sum of missing values in the column 'participant' 
+```
+
+There are no `NA`s in the participant variable, so we can safely replace it with a participant number. We can use the function `match()` to replace the participant alias with its index in `unique(data$participant)`. This will yield us with participant numbers that go from 1 to the number of participants (which is `length(unique(data$participant))`).
+
+```{r replace participant values with participant number}
+unique(data$participant) # print unique values in data$participant before match
+
+data$participant <- match(data$participant, unique(data$participant)) # matches the values in data$participant with the unique values in data$participant and returns the index of the match
+
+unique(data$participant) # print unique values in data$participant after match
+```
+
+## Making composite variables
+After having done some initial cleaning, we can create composite variables. In our study, participants completed a `main_questionnaire`, an `evening_questionnaire` and a `Consent and intake questionnaire`. In this last one, participants provided information that does not change over time.
+
+```{r print different questionnaires in the study}
+# to check which different questionnaires are part of the dataset:
+unique(data$questionnaire) # prints unique values in the questionnaire column
+```
+In the intake questionnaire, participants were asked about: \n
+
+1. Their age and gender \n
+2. Their level of Neuroticism, according to the Neuroticism subscale of the Big Five Inventory (BFI) \n
+3. Satisfaction with Life Scale (SWLS). \n
+\n
+
+We can create composite variables for these 2 scales and add them to the main dataset.
+
+```{r create data frame with only intake questionnaire rows}
+intake_data <- data[data$questionnaire == 'Consent and intake questionnaire',] # create data frame with only intake questionnaire rows
+
+# check that everyone that is in data is also in intake_data -> everyone completed intake survey
+all(unique(data$participant) == unique(intake_data$participant))
+```
+
+Now that we have a new data frame with only the intake questionnaire rows, we create the **composite variable for the SWLS**, which is the sum of its 5 items:
+
+```{r composite variable for SWLS}
+# create composite variables
+# For life Satisfaction: sum of the 5 items
+intake_data <- intake_data |> 
+  mutate(life_satisfaction = rowSums(pick( # sums the rows of the column names below, and saves the result to a new column called life_satisfaction
+    # matches("SWLS_[1-5]_multipleChoice_likert") # or in 1 line using regex
+    'SWLS_1_likert',
+    'SWLS_2_likert',
+    'SWLS_3_likert',
+    'SWLS_4_likert',
+    'SWLS_5_likert'
+  )))
+```
+
+For the **composite variable for neuroticism:**, we take the mean of the 8 items. However, the variables named with an 'R' after the question number (like `'BFI_neuroticism_9R_multipleChoice_likert'`) need to be reversed.
+```{r composite variable for BFI}
+# These are the items that we need to reverse:
+BFI_reversed_cols <- c(
+  'BFI_neuroticism_9R_likert',
+  'BFI_neuroticism_24R_likert',
+  'BFI_neuroticism_34R_likert'
+) # these are the items we have to reverse
+
+BFI_new_names <- c(
+  'BFI_neuroticism_9_likert',
+  'BFI_neuroticism_24_likert',
+  'BFI_neuroticism_34_likert'
+)
+
+intake_data <- intake_data %>% 
+  mutate(across(
+    .cols = all_of(BFI_reversed_cols), # we specify which columns we will reverse
+    .fns = \(x) 6 - x, # to reverse them, we just substract the maximum value of the likert scale + 1, by the value of the column (x)
+    .names = "{BFI_new_names[match(.col, BFI_reversed_cols)]}" # changes the BFI_reversed_cols names into BFI_new_names. This makes a new set of columns that have been reversed
+  ))
+
+intake_data <- intake_data %>%
+  mutate(neuroticism = rowMeans(pick( # we calculate the mean of the columns below and save it to a new column called neuroticism
+    matches("BFI_neuroticism_[4,9,14,19,24,29,34,39]_likert")# picks all the columns corresponding to the BFI, but only the reversed ones (it does not pick columns with an R like BFI_neuroticism_9R_likert)
+  )))
+```
+
+Now that we created the composite variables for the intake questionnaire, we can join them to the main dataset. \n
+This also means that we can remove the rows corresponding to the intake questionnaire from the main dataset, as we have already extracted the information we needed.
+
+```{r}
+all_data <- data # because in the next step we will remove some rows, we will save the original data in a new variable to keep it.
+
+data <- data %>%
+  filter(questionnaire != "Consent and intake questionnaire") |> # remove rows for intake questionnaire
+  select(-consent_yesno:-BFI_neuroticism_39_likert) |> # remove columns for intake questionnaire
+  left_join( # join the composite variables from intake data to the main data
+    y = select(
+      intake_data, participant, gender, gender_string, age, life_satisfaction,
+      neuroticism # we don't join ALL the rows from intake data, just, gender, age and the composite variables for life satisfaction and neuroticism
+    ),
+    by = "participant" # join intake data by the variable "participant"
+  )%>%
+  select(participant, code, questionnaire, scheduled, sent, start, stop,
+         phone_server_offset, gender, gender_string, age, life_satisfaction, neuroticism,
+         everything()) # reorder columns
+```
+
+## Checking for duplicated variables
+Following the [ESM Preprocessing Gallery guidelines for duplication](https://preprocess.esmtools.com/pages/40_Duplication.html), we will check for the following three types of duplication:\n
+
+**1. Duplicated rows:** two rows that are exactly identical. We do not have any:
+```{r check for duplicated rows}
+any(duplicated(data)) # returns TRUE if there is any duplicated row in data
+```
+**2. Duplicated answers:** we want to check whether any observation have exactly the same answers. We do not have any:
+
+```{r check for duplicated answers}
+# since the data frame is ordered, we can get the index of the column where the questionnaire answers start, which is the column 'slider_happy'
+start_index <- which(names(data) == "slider_happy")
+
+duplicated_answers <- data %>%
+  filter(!is.na(start)) %>% # remove rows that correspond to unanswered beeps
+  group_by(across(start_index:ncol(data))) %>%
+  filter(n() > 1) # check for duplicated answers in that column
+
+duplicated_answers
+```
+
+**3. Duplicated time stamps** we will check that the same participant does not have duplicated time stamps.
+
+First, we will check for duplicates in the `sent` variable.
+
+```{r check for duplicated time stamps}
+# Different participants can correctly have the same time stamp
+# so we will just check that the same participant does not have duplicated time stamps:
+duplicated_sent <- data %>% 
+  group_by(participant, sent) %>%
+  filter(n() > 1) # this checks if, for each participant + sent time combination, if there is more than one row
+
+duplicated_sent
+
+# One duplicated sent time stamp! participant 7 responded evening questionnaire twice on the same day
+```
+It seems that one participant answered the evening questionnaire twice. In our case, this was possible because participants were allowed to fill the evening questionnaire multiple times if they clicked on the "repeat questionnaire" button in the app. \n
+
+We can just remove the questionnaire that was answered later, as follows:
+```{r remove duplicated time stamp}
+data <- data %>%
+  group_by(participant, sent) %>%
+  filter(!(n() > 1 & start == max(start))) %>% # filtering out the duplicated time stamp: finding it with n() > 1 and using start == max(start) to select the start value that is the latest in time
+  ungroup()
+```
+
+Now, we can check that there are no duplicates in the `start` column:
+
+```{r check for duplicates in the start column}
+duplicated_start <- data %>%
+  filter(!is.na(start)) %>% # remove rows that correspond to unanswered beeps
+  group_by(participant, start) %>%
+  filter(n() > 1)
+
+nrow(duplicated_start) # no duplicated start time stamps!
+```
+There are no duplicates in `start`.
+
+## First missingness analysis
+
+It's important to investigate and understand missing values as it can help us understand participants response patterns, and identify data collection errors. \n
+
+In our case, participants were not able to skip questions, so missing values may also indicate errors in the data collection process. However, we did have branching questions in the evening questionnaire, where participants were asked if they had had a stressful/positive event that day and were prompted to describe the event only if they answered 'yes'. If they answered 'no', they were not asked, therefore, `NA` values in these columns are expected. \n\n
+
+Note that exploring `NA` values is different from exploring participant compliance (their proportion of answered beeps). We will explore participant compliance in a later step. \n
+
+First, we can use the `vis_miss()` function from the `naniar` package to visualize the missing values in the dataset. The x axis represents the variables in the dataset and the y axis represents the rows. The black cells represent present values, and the white cells represent missing values. \n\n
+
+We can see that there are some columns with a lot of missing values, which is expected since we are displaying data from two different questionnaires. We can also see that there are some participants that did not sign up with a 'code'.
+
+```{r plot missing values, out.width="200%"}
+data <- data[order(data$participant, data$start),] #  I think the plot makes more sense if the data is ordered by participant and timeStampStart
+
+vis_miss(data) + ggtitle("Missing values") # plotting the missing data and adding a title
+```
+
+We have also seen that some columns may have all missing values. It would be interesting to check which columns they are, and remove them if they are not useful for the analysis.
+
+```{r check which columns have all NA}}  
+na_cols <- apply(data, 2, function(col) all(is.na(col))) # get cols that have all NA
+
+names(data)[na_cols] # checking the names of these columns. We have 4 cols with all NA
+```
+
+The four columns with all `NA` are: `r names(data)[na_cols]`. These correspond to multiple choice questions where an "Answer value" was not provided during questionnaire creation. Therefore, it is completely expected that these columns are empty. We will remove them with: \n 
+
+```{r remove columns with all NA}
+data <- data[, !na_cols] # removing cols with all NA
+
+# Tidyverse alternative
+# data <- select(data, -where(\(x) all(is.na(x))))
+```
+
+We can also see that the missed beeps have `NA`s in the `start` variable, and the answered beeps do not. We can use this information to create an additional variable that indicates whether the beep was answered or not.
+
+```{r create answered variable}
+data <- data %>%
+  mutate(answered = !is.na(start)) # missed beeps will be FALSE, answered beeps will be TRUE
+```
+
+## Reformat time stamps
+
+The time stamps from m-Path are in [Unix time](https://en.wikipedia.org/wiki/Unix_time). To work with them, we will reformat them to a more readable format. We will use the `as.POSIXct()` function from the `lubridate` package to convert the time stamps to a POSIXct object. We will also specify the following format: `"%Y-%m-%d %H:%M:%OS"`. We are specifying the timezone as UTC.
+
+```{r reformat time stamps}
+data <- data %>%
+  mutate(across(
+    c(scheduled, sent, start, stop), # we specify the columns we want to reformat
+    \(x) as.POSIXct(x, format="%Y-%m-%d %H:%M:%OS", tz = 'UTC') # we specify the time format
+  ))
+```
+
+Now that the dates are reformatted, we can create some other important time variables: \n
+
+1. We create a column `obs_n` that for each participant, shows the number of observations in the order they were sent (starting from 1 to 110, which is the total number of observations per participant). \n
+
+2. The column `day_n` shows the number of days since the first beep was sent for each participant.\n
+
+3. The column `obs_n_day` shows the observation number within a day for each participant (the first beep of the day will be 1, until the last beep of the day: 11).
+
+```{r create time variables}
+# create observation number (in total)
+data <- data %>% 
+  arrange(participant, sent) %>% # Order the data frame by participant, and sent
+  group_by(participant) %>%
+  mutate(obs_n = 1:n()) %>% # Create a new column with the observation number (since we ordered by "sent", we are basing the observation number based on the 'sent' column)
+  ungroup()
+
+# create day number
+data <- data %>% 
+  group_by(participant) %>%
+  mutate(day1 = as.Date(min(sent, na.rm=TRUE)), # get the first day of the participant
+         day_n = difftime(as.Date(sent), day1, units="days") + 1) %>% # calculate the number of days since the first beep was sent
+  select(-day1) %>% # unselect the column day1, we just created it to calculate day_n, but we don't want it in our data
+  ungroup()
+
+# Create observation number within day
+data <- data %>% arrange(participant, sent) %>% # Order the data frame by participant and sent
+  group_by(participant, day_n) %>%
+  mutate(obs_n_day = 1:n()) %>% # Create a new column with the observation number within a day
+  ungroup()
+
+```
+
+## Merging with external data sources
+
+Here, we will show how to merge the current dataset with an external dataset. \n
+
+In the external dataset, we have data that corresponds to the average heart rate throughout the day (note: unlike the other data, the external data does not correspond to real data, it was simulated). 
+
+```{r}
+# Load the external dataset
+external_data <- read.csv('external_dataset_bpm.csv')
+
+head(external_data) # check the dataset
+```
+The external dataset has the columns `code`, `day_n` and `bpm_day`, for each participant and for each day we have the mean heart rate. \n
+
+Since the value to link the two datasets is in `code`, we should check that the codes are in order (e.g. are there missing codes?). We can check that each code corresponds to one participant by examining the variable's [coherence](https://preprocess.esmtools.com/pages/40_Check_variable_coherence.html). We can see here that one participant does not have a code, so we will not be able to get their heart rate data. But otherwise it seems like each code corresponds to one participant:
+
+```{r}
+data %>% select(participant, code) %>% unique()
+```
+
+When dealing with dates, we may also have the problem that the date formats are not the same in both datasets. In this case, the `day_n` in the external dataset corresponds to an `integer` class, while in the main dataset it corresponds to a `difftime` class. Having these two different formats will be a problem for merging the two datasets. A simple solution is to change `data$day_n` to an integer instead of a `difftime` object.
+
+```{r change day_n to integer}
+data <- data %>%
+  mutate(day_n = as.integer(day_n))
+```
+
+We can use the following code to merge it with the main dataset:
+
+```{r merge with external data}
+data <- data %>% 
+  left_join(external_data, by = c('code','day_n')) # we merge by code and by day because we have a heart rate mean for each participant and each day
+```
+
+## Handling multiple choice data
+
+When participants can provide multiple choices to a question, `read_mpath()` stores these as vectors such as `c(1,2,4)`. \n
+
+To deal with these responses and analyze them, we can convert the data to a **wide format**: (where each choice is a separate row), like this: \n
+
+| Participant   | day           | choice |
+| ------------- | ------------- |------------------ |
+| 1             | 1             | 1                 |
+| 1             | 1             | 2                 |
+| 1             | 1             | 4                 |
+
+We can also convert the data to a **long format** (where each choice is a separate column). \n
+
+| Participant   | day           | choice_1| choice_2| choice_3|
+| ------------- | ------------- |--- | --- | --- |
+| 1             | 1             | 1  | 2   | 4   |
+
+The following data exemplifies how to convert the these kind of columns both to a long and to a wide format. Using our column `evening_activity_index`, which contains vectors of which activities people had done during a specific day:
+
+```{r create activity data}
+activity_data <- data[,c('participant','day_n', 'evening_activity_index')]
+
+activity_data <- activity_data[!is.na(activity_data$evening_activity_index),] # delete rows with an NA in this column
+```
+
+Note that in the above code, we delete rows with `NA` in the column `evening_activity_index`. In our case, participants were **not** allowed to leave this question blank, so `NA`s indicate unanswered beeps. In other cases, `NA`s may indicate that the person reported doing none of the activities listed, so it maybe would not be a good idea to delete these rows, as they are still informative.
+
+### Long format
+```{r convert to long format}
+long_data <- activity_data %>% # convert to long format using unnest()
+  unnest(evening_activity_index)
+
+head(long_data)
+```
+
+### Wide format
+``` {r convert to wide format}
+wide_data <- activity_data %>%
+  unnest_wider(evening_activity_index, names_sep = "_")
+
+head(wide_data)
+```
+
+Another option for a wide data frame is to have binary columns corresponding to an choice. Like this: \n
+
+| Participant   | day           | choice_1| choice_2| choice_3|
+| ------------- | ------------- |--- | --- | --- |
+| 1             | 1             | 0  | 1   | 0   |
+| 2             | 1             | 1  | 1   | 1   |
+
+In this table, participant one chose choice 2, but didn't choose choice 1 or 3, while participant 2 chose all three options. This can be done with the following code:
+
+```{r convert to wide format (with binary variables)}
+data_wide_binary <- activity_data %>%
+  unnest(evening_activity_index) # first, 
+
+data_wide_binary <- data_wide_binary %>%
+  mutate(activity = paste0("activity_", evening_activity_index)) %>%
+  pivot_wider(
+    names_from = activity,
+    values_from = evening_activity_index,
+    values_fill = list(evening_activity_index = 0),
+    values_fn = list(evening_activity_index = length)
+  )
+
+head(data_wide_binary)
+```
+
+
+## Re-ordering columns
+
+As a final step, we will re-order the columns using the `select` function from `dplyr`:
+
+```{r re-order columns}
+data <- data %>%
+  select(participant, code, questionnaire, scheduled, sent, start, stop,
+         phone_server_offset, obs_n, day_n, obs_n_day, answered, bpm_day, everything())
+```
+
+# Step 2 : Design and sampling scheme
+
+In this [step](https://preprocess.esmtools.com/framework.html#step-2-design-and-sampling-scheme), we explore the design and sampling scheme of the study. The main goal is to examine to what extent the data collection process went as expected, and to identify potential issues that could motivate data exclusion. We mainly will check the coherence of the time stamps, the sent beeps and the duration of the study.
+
+## Coherence time stamps and observations order
+
+In the following sections, we perform some logical tests to ensure the coherence of the time stamps and the observations. For example: we expect that for one observation, the scheduled time should always be before the sent time. Having beeps where this is not the case could indicate an error in the data collection process. For more information on time stamp coherence and how to check it, see the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/pages/50_Coherence_timestamps_obs.html).
+
+### Coherence within observations
+
+Within a single observation, we expect that the scheduled time is before the sent time, the sent time is before the start time, and the start time is before the stop time. We will check this for all observations. 
+
+```{r coherence within observation}
+# Checking that scheduled < sent < start < stop
+
+any(data$scheduled > data$sent & !is.na(data$sent)) # check if any scheduled time is after the sent time
+
+any(data$sent > data$start & !is.na(data$start)) # check if any sent time is after the start time
+
+any(data$start > data$stop & !is.na(data$stop)) # check if any start time is after the stop time
+```
+It all returns `FALSE`, which means that all observations are in the expected order.\n
+
+If some observations were not in the expected order, this could be due to participants changing time zones, or changing from summer to winter times (or the other way around).
+
+### Coherence between observations
+
+We should also verify that the time stamps are in the correct order between observations. We expect that the scheduled time of the current observation is before the scheduled time of the next observation, and the same for the sent, start, and stop times. \n
+
+However, it may be that participants answered the 6th beep before the 5th beep, due to close beep times and overlapping expiration times. In this case, maybe the order of the observations could be reversed, so that observation 5 becomes observation 6. \n
+
+To check for coherence between observations, we order the data frame according to one of our time variables, and check for issues between consecutive observations.
+
+```{r coherence between observations}
+data %>%
+  arrange(participant, sent) %>% # Order the data frame by participant and sent
+  group_by(participant) %>%
+  mutate(sched_lag_issue = lag(scheduled) > scheduled, # check if the scheduled time of the current observation is after the scheduled time of the previous observation
+         sent_lag_issue = lag(sent) > sent,
+         start_lag_issue = lag(start) > start,
+         stop_lag_issue = lag(stop) > stop) %>%
+  filter(sched_lag_issue | sent_lag_issue | start_lag_issue | stop_lag_issue) # show only rows where one of these issues is present
+```
+
+We have a row that shows a `start_lag` issue, upon further inspection, we see that this is because the participant filled a main questionnaire beep just after the evening questionnaire. \n
+
+This is okay, because in the evening questionnaire participants answer about their whole day, and in the "main questionnaire" beep they answer about how they feel in that moment. \n
+
+## Duration of the study per participant
+
+We will now check the duration of the study by plotting the earliest and latest sent date. We expect that the duration of the study is the 10 days for everyone.
+
+```{r study duration per participant}
+data %>% group_by(participant) %>%
+  summarise(min_sent = min(sent, na.rm=TRUE), max_sent = max(sent, na.rm=TRUE)) %>% # get the minimum and maximum sent time for each participant
+  ggplot(aes(x=min_sent, xend=max_sent, y=factor(participant), group=factor(participant))) + 
+  geom_dumbbell(color=dark_mpath_palette[1], 
+                size=0.75) +
+  scale_x_datetime(date_breaks="1 month", date_labels = "%B %y") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  xlab('Time') + 
+  ylab('Participant') +
+  ggtitle("Duration of the study per participant")
+```
+
+## Number of beeps **sent** per participant
+All participants have the same number of beeps sent, as expected:
+
+```{r number of sent beeps}
+data %>% 
+  filter(!is.na(sent)) %>% # Keep only sent beeps
+  group_by(participant) %>% 
+  summarize(n = n()) %>% # Compute the number of beeps sent per participant
+  ggplot(aes(x=factor(participant),y=n)) +
+  geom_col(position = "dodge", fill = dark_mpath_palette[2])+
+  xlab('Participant')+
+  ylab('Number of beeps')+
+  ggtitle('Number of beeps sent per participant')
+```
+
+## Delay between two consecutive beeps
+Most delays are around 1 hour because that's how we spaced the beeps during the day.
+The delays at around 10 hours correspond to the delay between the last beep of the day (evening questionnaire) and the first beep of the next day.
+
+```{r delay between two consecutive beeps}
+df_int <- data %>%
+  arrange(participant, sent) %>%
+  group_by(participant) %>%
+  mutate(delay = difftime(as.POSIXct(lead(sent)), sent, units="hours")) # calculate the delay between two consecutive beeps
+
+df_int %>% 
+  ggplot(aes(x = delay)) +
+  geom_histogram(bins=100, fill = dark_mpath_palette[3]) + # nothing weird here, the first beep of the day has a longer delay, and then the     rest of the beeps have very similar delays
+  xlab('Delay between two consecutive beeps (hours)') +
+  ggtitle('Delay between two consecutive beeps')
+```
+
+## Conclusions: Design and sampling scheme
+
+In general, we did not find any issues with the experimental design: \n\n
+
+* The time stamps are coherent.
+* The number of beeps sent is equal for all participants, which in our case was intended (note that in some experiments, participants may receive different beeps depending on their experimental group, or other variables. In which case an equal number of beeps per participant would be a problem).
+* The delays between beeps are as expected.
+* The duration of the study per participant is also consistent (we expected an equal duration of 10 days per participant). \n
+
+We can now move on to the next steps of the pre-processing.
+
+Note: we followed steps that were relevant for our study design, for a more comprehensive overview of possible checks for the sampling
+and study design, see the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/).
+
+# Step 3: Participants response behaviors
+
+In this step, we want to look more closely at participants' responses. We will look at whether participants seemed to follow the sampling scheme correctly, and whether there are any response patterns that could reduce data quality. We primarily will look at the sampling scheme per participant, the delay to fill beeps, the time of answered and missed beeps, and participant compliance. \n
+
+For a more comprehensive overview of possible checks for this step, see the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/).
+
+## Sampling scheme per participant
+
+### Beep level
+With the plot below, we can explore whether there are patterns in participant's response rates throughout the study. \n
+
+In the following plot you can see the number of beeps answered per participant, per observation. The vertical lines separate the days. \n
+
+Participant 1 and 16 seemed to answer more beeps at the start of the study than later on, and there are some considerable gaps for some participants (e.g. participant 2). But otherwise there's no clear pattern.
+
+```{r sampling scheme for beeps}
+data %>% filter(answered) %>%  # filtering by answered beeps, another option is !is.na(start)
+  group_by(participant, obs_n) %>%
+  ggplot(aes(x = obs_n, y = factor(participant))) +
+  geom_point(size=1.5, col = dark_mpath_palette[1]) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylab('Participant') +
+  xlab('Observation number') +
+  ggtitle('Answered beeps per participant')+
+  geom_vline(xintercept = c(seq(from = 11.5, to = max(data$obs_n), by = 11)), color = mpath_palette[3], alpha = 0.5) # adding vertical lines to separate days
+```
+
+## Delay to start and to fill
+
+We will now look at the delay between when participants received a beep and when they actually answered it (the delay in starting the beep), and how long it takes participants to fill the beep. \n
+
+We will plot the delay to start and to fill separating per questionnaire, this is because the two different questionnaires had a different expiration time. We can see that most delays to answer are quite small. Some answers for the evening questionnaire took a long time, this was because the evening questionnaire had an expiration of 3 hours, while participants were only able to answer beeps for the main questionnaire in the first 30 minutes. \n
+
+```{r delay to start and fill}
+data = data %>% 
+    mutate(delay_start_min = difftime(start, sent, units="mins"), # calculate the delay to start
+           delay_end_min = difftime(stop, start, units="mins")) # calculate the delay to fill
+
+data %>% filter(answered)  %>% 
+    ggplot(aes(x = delay_start_min, fill = questionnaire)) +
+        geom_histogram(bins=100, alpha = 0.7, position = 'identity') + 
+        scale_fill_manual(values = dark_mpath_palette) +
+        xlab('Delay to start (minutes)') +
+        ggtitle('Delay to start per questionnaire')
+```
+
+## Time of answered/missed beeps
+
+Here, we will explore the time of answered and missed beeps. If these histograms are very different, it may indicate that participants are missing beeps at certain times of the day (for example, it could be that participants miss more beeps in the morning than in the afternoon). \n
+
+The plots look very similar. We can see that the last beeps were sent at around 22h, but there are answered beeps as late as 1h in the night. This is because the expiration date for the evening questionnaire was set at 3 hours, so some participants may have answered these beeps quite late. The expiration for the rest of the beeps was around 30 minutes.
+
+```{r time of answered and missed beeps}
+data %>% 
+    filter(answered) %>% # Filter for valid observations
+    ggplot(aes(x = hms::as_hms(start))) +
+        geom_histogram(bins=100, fill = dark_mpath_palette[1]) +
+        scale_x_time(limits=hms::as_hms(c("00:00:00", "24:00:00")), 
+                     breaks = scales::date_breaks("2 hours"),
+                     labels = function(x) strftime(x, format = "%H:%M"))+
+        xlab('Time') +
+        ggtitle('Time of answered beeps')
+
+data %>% 
+    filter(!answered) %>% # Filter for valid observations
+    ggplot(aes(x = hms::as_hms(sent))) +
+        geom_histogram(bins=100, fill = dark_mpath_palette[2]) +
+        scale_x_time(limits=hms::as_hms(c("00:00:00", "24:00:00")), 
+                     breaks = scales::date_breaks("2 hours"),
+                     labels = function(x) strftime(x, format = "%H:%M"))+
+        xlab('Time') +
+        ggtitle('Time of missed beeps')
+```
+
+## Compliance rate
+
+Compliance is the proportion of answered beeps. It is important to have a look at this metric, to identify participants that have missed a lot of beeps. We can use the function `response_rate` from the `mpathr` package to calculate the response rate. \n
+
+```{r compliance rate}
+source('../response_rate_functions/response_rate_functions.R') # just manually loading the response_rate_functions until the package is done
+
+response_rates <- response_rate(data = data,
+                                valid_col = answered, 
+                                by = participant)
+response_rates %>%
+  group_by(participant) %>%
+  ggplot(aes(x= participant, y= response_rate)) +
+  geom_bar(stat = 'identity', fill = dark_mpath_palette[3]) + 
+  xlab('Participant') +
+  ylab('Compliance (proportion of answered beeps)') +
+  ggtitle('Compliance per participant')
+```
+
+Additionally, we can just print a summary of each participant and their compliance:
+
+```{r print response rates}
+print(response_rates)
+```
+
+We can see that some participants have a very low compliance rate (e.g. participant 1 with a compliance of 11%). We may want to exclude these participants from the analysis.
+
+```{r filter out participants with low compliance}
+data <- data %>%
+  filter(!(participant %in% c(1,8)))
+```
+
+### Detecting dishonesty
+
+In cases where participants receive incentives based on how many questionnaires they filled, they could manually change the time on their phone to fill in older questionnaires. In order to detect this, we have the column `phone_server_offset`, which is the difference between the phone time and the server time. \n
+
+If participants change the time on their phone, this column will show a large difference. We can check if there are any participants with a large difference in the `phone_server_offset` column. \n
+
+```{r check phone-server offset}
+data %>%
+  mutate(phone_server_offset = abs(phone_server_offset / 60)) %>% # we take the absolute value of the phone_server_offset) in minutes
+  ggplot(aes(x = abs(phone_server_offset))) +
+  geom_histogram(bins=100, alpha = 0.7, position = 'identity', fill = mpath_palette[1])+
+  xlab('Phone-server offset (minutes)') +
+  ggtitle('Difference between phone and server time')
+```
+
+We can see that the maximum difference is around 3 minutes. Since this is not a large difference, it seems like participants didn't change the time on their phone during the study.
+
+## Conclusions: Participants response behaviors
+
+In this section, we examined participants' response behaviors and identified some patterns. 
+For example, we found and removed participants with a very low compliance rate.
+
+For more guidelines on how to conduct similar checks, see [ESM Preprocessing Gallery](https://preprocess.esmtools.com/).
+
+# Step 4: Compute and transform variables
+
+In this step we will compute important variables to prepare the data for our analysis. \n
+
+We will conduct the following two analyses:\n
+
+1. **Analysis 1**: Do participants have more negative affect when they are alone?**
+2. **Analysis 2**: Is the evening-reported anxiety level predicted well with a combination of the mean anxiety levels and the maximum anxiety level experienced throughout the day?**
+
+## Data preparation for analysis 1
+### Computing affect scores
+
+For the first analysis, we need to compute a measure of negative affect. This will be the mean of the sad, angry, anxious, and tired sliders. \n
+
+```{r compute negative affect score}
+data <- data %>%
+  rowwise() %>% # we use rowwise to calculate the mean of the affect variables for each row
+  mutate(negative_affect = mean(c(slider_sad, slider_angry, slider_anxious, slider_tired)))
+```
+
+### Computing binary variables from multiple choice questions
+
+For the first analysis, we also need to create a binary variable that indicates whether the participant was alone or not. We can use the `company_index` variable to create it. \n
+
+The `company_index` column contains integers from 1-4 that indicate the participant's. Each index means the following: \n
+
+* Index 1: 'Alone'
+* Index 2: 'With one person I know'
+* Index 3: 'With multiple people I know'
+* Index 4: 'With one or more people I don't know'
+
+We will create a new variable called `alone` that is 1 if the participant was alone (index == 1), and 0 if they were not. \n
+
+```{r create alone variable}
+data <- data %>%
+  mutate(alone = ifelse(company_index == 1, 1, 0)) # if the company index is 1, the participant was alone
+```
+
+This is the only transformation we need for the first analysis. We can save away the data from this analysis to `data_analysis_1`, where we also filter out unanswered beeps (or beeps that do not correspond to the main questionnaire) and only keep the variables we need for the analysis. \n
+
+```{r create data for analysis 1}
+data_analysis_1 <- data %>% 
+  filter(questionnaire == 'main_questionnaire' & answered == TRUE) %>% 
+  select(participant, negative_affect, alone)
+```
+
+## Data preparation for analysis 2
+### Filtering out participants and days with small response rate
+For the second analysis, we will eliminate participant's data if they had less than 50% compliance rate:
+
+```{r find participants with low compliance}
+participants_to_rm <- response_rate(data = data, # calculate response (compliance) rate
+                                 valid_col = answered, 
+                                 by = participant) %>%
+  filter(response_rate < 0.5) # filter out participants with a compliance rate of less than 50%
+
+print(participants_to_rm$participant) # these are the participants we will remove for the 2nd analysis
+```
+Now that we know which participants to remove, we just filter them out and save the resulting data frame to `data_analysis_2`.
+
+```{r filter out participants for analysis 2}
+data_analysis_2 <- data %>%
+  filter(!(participant %in% participants_to_rm$participant)) # filters out participants that are present in participants_to_rm
+```
+
+Also, for every participant, if they answered less than 50% of the beeps on a given day, we will remove that day's data from the analysis. This is important since we will take the mean, and we would not want to analyze means of very little values.
+
+```{r filter out days with low compliance}
+days_below_50 <- data_analysis_2 %>%
+  group_by(participant, day_n) %>% # this time, grouping by participant and day
+  summarize(na_prop = sum(answered)/max(obs_n_day)) %>% # this yields the compliance rate per participant and per day
+  filter(na_prop < 0.5) # filtering the data frame to have only day-participant combinations with a compliance rate of less than 50%
+
+data_analysis_2 <- data_analysis_2 %>%
+  anti_join(days_below_50, by = c("participant", "day_n")) # we remove from data_analysis_2, the day-participant combinations that are in days_below_50
+```
+
+### Computing the maximum and mean anxiety level
+
+We will calculate the maximum and the mean anxiety level (in `slider_anxious`) experienced by each participant in each day. We can do this with the following code: \n
+
+```{r compute max and mean anxiety level}
+data_analysis_2 <- data_analysis_2 %>%
+  group_by(participant, day_n) %>%
+  mutate(max_anxious = max(slider_anxious, na.rm = TRUE),
+         mean_anxious = mean(slider_anxious, na.rm = TRUE)) %>% # calculate the maximum anxiety level for each participant and day
+  ungroup() %>%
+  filter(questionnaire == 'evening_questionnaire' & answered == TRUE) %>%
+  select(participant, day_n, evening_slider_anxious, max_anxious, mean_anxious) # selecting only columns we will need later
+```
+
+# Step 5: Data exploration
+
+Now, we will explore the data a bit more to get to know the distribution and characteristics of some important variables. \n
+
+## Correlation between negative affect variables
+Since we are pooling together all the negative affect variables into a composite variable (negative affect), it's interesting to see how related they are. We can quickly visualize the correlations between these variables in the plot below: \n
+
+```{r correlation between negative affect variables}
+negative_aff_vars <- c('slider_anxious', 'slider_sad', 'slider_angry','slider_tired')
+
+data_mat <- na.omit(data[,negative_aff_vars])
+
+ggpairs(data_mat)
+```
+
+As expected, correlations are positive, but most correlations between the variables are rather weak. \n
+
+Along the diagonal, we can see the distribution of the variables. Most distributions are clearly skewed to the right. Which means that most of the time, participants report low levels of anxiety, sadness and anger. However, participants report higher levels of tiredness. \n
+
+## Alone vs. not alone
+
+We could look at how often participants reported being alone. We can see that the proportion of time alone greatly varies between individuals. Some participants report being alone almost 90% of the time, while some others are accompanied mostly 90% of the time. \n
+
+```{r alone vs. not alone plot}
+data %>%
+  filter(!is.na(alone)) %>%
+  group_by(participant, company_string) %>%
+  summarise(count = n()) %>%
+  ungroup() %>% 
+  ggplot(aes(fill=factor(company_string, levels=c("Alone", "With one person I know", "With multiple people I know", "With one or more people I don't know")), y=count, x=participant)) +
+  geom_bar(position="fill", stat="identity") +
+  scale_fill_manual('company', values = c(mpath_palette[c(1,3)], '#DB8908', mpath_palette[2])) +
+  xlab('Participant') +
+  ggtitle('Proportion alone or accompanied')
+```
+
+For the analysis, we will pool together reports of being with multiple people, or being with only one person. We will also consider being with one or more people that the participant does not know as being accompanied. \n
+
+## Emotion variables
+
+We can also have a look at the distribution of the emotion sliders. We can mainly see that the negative emotions (angry, anxious, sad and tired) tend to be skewed to the right, which means that most of the time participants report low levels of these emotions. 'Tired' seems to be an exception to this trend. Meanwhile, the positive emotions (happy, relaxed and energetic) tend to be skewed to the left, which means that most of the time participants report high levels of these emotions. \n
+
+```{r plot distribution of emotion variables}
+data %>% 
+  gather(key = var, value = value, slider_happy:slider_tired) %>% # changing the data to long format to be able to plot it
+  ggplot(aes (x = value)) +
+  geom_histogram(aes(y = ..density..), alpha = 0.7) + 
+  geom_density(alpha = 0.5) +
+  facet_wrap(vars(var), scales = "free")
+```
+
+# Step 6: Analysis
+## Question 1: Do participants have more negative affect when they are alone?
+
+We will assess this question with a mixed model, to account for the random effect of participants. We will use the following formula: \n
+
+$$\text{negative affect ~ alone + (1 + alone | participant)}$$
+With this formula, we specify an intercept for every participant, as well as random slopes for `alone`.
+
+```{r analysis 1 model}
+model_1 <- lmer(negative_affect ~ alone + (1 + alone | participant), data = data_analysis_1)
+```
+
+Before looking at the results, we should check that our mixed model's assumptions are met. In our case, it does not make sense to look at linearity because our only predictor (`alone`) is a binary variable. However, we can check for homoscedasticity and normality of residuals: \n
+
+**Homoscedasticity**: we don't see any clear patterns that could point to heteroscedasticity in the residuals vs. fitted values plot.
+
+```{r homoscedasticity analysis 1}
+# Homoscedasticity
+plot(model_1, 
+     pch = 20, # changing point type
+     alpha = 0.5, # adding transparency
+     col = mpath_palette[2],
+     main = 'Homoscedasticity of residuals'
+     )
+```
+
+**Normality**: the residuals are normally distributed, although a bit right skewed.
+
+```{r normality analysis 1}
+# Normality of residuals
+qqnorm(resid(model_1),
+       pch = 20,
+       col = mpath_palette[3])
+qqline(resid(model_1),
+       col = "black",
+       lwd = 2)
+```
+
+We can now check the results of the model:
+
+```{r results analysis 1}
+summary(model_1) # prints a summary of the model results
+Anova(model_1) # chisquare test to see if the effects are different from 0
+```
+
+From the results, we can see that the effect of being alone on negative affect is not significant (*p* = `r round(Anova(model_1)[3],2)`). It does not seem like participants have more negative affect when they are alone. However, we are using a very small dataset, which results very low power. \n
+
+In the plot below we can visualize the effect. We can see a very small difference in the group means (marked in red).
+
+```{r plot analysis 1}
+data_analysis_1$alone <- as.factor(data_analysis_1$alone)
+levels(data_analysis_1$alone) <- c("Not Alone", "Alone")
+
+data_analysis_1 %>%
+  ggplot(aes(x = alone, y = negative_affect)) +
+  geom_jitter(width = 0.07, height = 0, alpha = 0.2, size = 2, color = mpath_palette[1]) +
+  #geom_point(alpha = 0.5) + # adding points with transparency
+  stat_summary(fun = mean, geom = "point", color = mpath_palette[2], size = 2.5) + # mean values
+  stat_summary(fun = mean, geom = "line", color = mpath_palette[2], aes(group = 1), size = 1) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.04, color = mpath_palette[2]) +
+  labs(title = "Negative Affect by Alone",
+       x = "Alone",
+       y = "Negative Affect") +
+  theme_minimal()
+```
+
+## Question 2: Is the evening-reported anxiety level predicted well with the mean and the maximum anxiety level?
+
+In this second analysis, we want to see whether the overall anxiety levels throughout the day (as reported in the evening questionnaire) can be well predicted by the average anxiety levels and the maximum anxiety levels experienced throughout the day. We will use the following model formula: \n
+
+$$\text{anxiety (evening) ~ mean(anxiety) + max(anxiety) + (1 | participant)}$$
+
+```{r analysis 2 model}
+model_2 <- lmer(evening_slider_anxious ~ mean_anxious + max_anxious + (1 | participant), 
+                data = data_analysis_2)
+```
+
+Before looking at the results, we should check that our mixed model's assumptions are met: \n
+
+**Linearity**: the points fall roughly along a straight line, so the linearity assumption is met.
+
+```{r linearity analysis 2}
+# Linearity
+plot(data_analysis_2$evening_slider_anxious, data_analysis_2$mean_anxious,
+     pch = 20, 
+     col = mpath_palette[1],
+     main = 'Linearity of the relationship between evening anxiety and mean anxiety')
+plot(data_analysis_2$evening_slider_anxious, data_analysis_2$max_anxious,
+     pch = 20, 
+     col = mpath_palette[1],
+     main = 'Linearity of the relationship between evening anxiety and max anxiety')
+```
+
+**Homoscedasticity**: there is no clear pattern in the residuals vs. fitted values plot, so the homoscedasticity assumption is also met.
+
+```{r homoscedasticity analysis 2}
+# Homoscedasticity
+plot(model_2, 
+     pch = 20, # changing point type
+     alpha = 0.5, # adding transparency
+     col = mpath_palette[2],
+     main = 'Homoscedasticity of residuals'
+     )
+# ... no clear pattern?
+```
+
+**Normality**: it seems like there is more data located at the extremes of the distribution and less data at the center. However, the residuals are roughly normally distributed.
+
+```{r normality analysis 2}
+# Normality of residuals
+qqnorm(resid(model_2),
+       pch = 20,
+       col = mpath_palette[3])
+qqline(resid(model_2),
+       col = "black",
+       lwd = 2)
+```
+
+Now that we have checked the assumptions. We can move on to the results:
+
+```{r results analysis 2}
+summary(model_2)
+Anova(model_2)
+```
+
+Both the mean and maximum anxiety level are significant predictors of the evening-reported anxiety. Going further, we may wonder how well our model predicts the evening-reported anxiety levels. For this, we can compute the $R^2$. We can use the `rsq.lmm` package, which implements a method for calculating it in mixed models. \n
+
+The $R^2$ of mixed models usually comes unpacked into three different values: \n
+
+* The proportion of variance explained by both the fixed and random effects, in `$model` (it is the sum of the two $R^2$ below).
+* The proportion of variance explained by the fixed effects, in `$fixed`.
+* The proportion of variance explained by the random effects, in `$random`.
+
+Since our random effects are just to control for the effect of different participants. We mainly want to look at the $R^2$ in `$fixed`. 
+
+```{r r2 analysis 2}
+library(rsq)
+
+rsq.lmm(model_2)
+```
+We can see that that the fixed effects explain `r round(rsq.lmm(model_2)$fixed * 100, 2)`% of the variance in the evening-reported anxiety levels. 
+
+## Analysis: Conclusion
+In this small analysis we assessed whether being alone influenced negative affect, and whether the mean and maximum anxiety experienced throughout the day could predict the evening-reported anxiety level. \n
+
+We mainly found that being alone does not seem to lead to higher negative affect levels. Maybe the way we categorized being alone was not sensitive enough to capture the effect. For example, we categorized the response option of being with "multiple people I don't know" as **not** being alone, but it would also make sense to categorize it as being alone. \n
+
+In the second analysis, we found that the mean and maximum anxiety levels experienced throughout the day are significant predictors of the evening-reported anxiety level. This shows that both the general level of anxiety, as well as the magnitude of anxiety peaks affect the appraisal of overall anxiety throughout the day. \n
