@@ -382,7 +382,7 @@ The time stamps from m-Path are in [Unix time](https://en.wikipedia.org/wiki/Uni
 data <- data %>%
   mutate(across(
     c(scheduled, sent, start, stop), # we specify the columns we want to reformat
-    \(x) as.POSIXct(x, format="%Y-%m-%d %H:%M:%OS", tz = 'UTC') # we specify the time format
+    \(x) as.POSIXct(x, format="%Y-%m-%d %H:%M:%OS", tz = 'UTC',origin = '1970-01-01 00:00:00') # we specify the time format
   ))
 ```
 
