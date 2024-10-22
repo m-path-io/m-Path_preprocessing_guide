@@ -39,6 +39,7 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 # create m-Path palettes (for plotting):
 theme_set(theme_bw())
 
+# Colors for the plots in this guide
 mpath_palette <- c("#2196F3", "#F33920", "#F4A222")
 dark_mpath_palette <- c("#087DDA", "#DA2006", "#DB8908")
 ```
@@ -376,13 +377,13 @@ data <- data %>%
 
 ## Reformat time stamps
 
-The time stamps from m-Path are in [Unix time](https://en.wikipedia.org/wiki/Unix_time). To work with them, we will reformat them to a more readable format. We will use the `as.POSIXct()` function from the `lubridate` package to convert the time stamps to a POSIXct object. We will also specify the following format: `"%Y-%m-%d %H:%M:%OS"`. We are specifying the timezone as UTC.
+The time stamps from m-Path are in [Unix time](https://en.wikipedia.org/wiki/Unix_time). To work with them, we will reformat them to a more readable format. We will use the `timestamps_to_datetime` function from `mpathr`, that will put the dates in this format: `"%Y-%m-%d %H:%M:%OS"`. We are specifying the timezone as "Europe/Brussels" because we know our participants were in this time zone.
 
 ```{r reformat time stamps}
 data <- data %>%
   mutate(across(
     c(scheduled, sent, start, stop), # we specify the columns we want to reformat
-    \(x) as.POSIXct(x, format="%Y-%m-%d %H:%M:%OS", tz = 'UTC',origin = '1970-01-01 00:00:00') # we specify the time format
+    \(x) timestamps_to_datetime(x, force_tz = 'Europe/Brussels')
   ))
 ```
 
