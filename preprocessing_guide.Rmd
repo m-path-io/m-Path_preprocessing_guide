@@ -52,11 +52,9 @@ In this step, we will import the data and perform some preliminary preprocessing
 To read the `basic.csv` as exported from m-Path, we can use the `read_mpath` function, that takes as arguments the path to the data (`file`) and the path to the meta data (`meta_data`), and returns the data as a data frame. The metadata contains information about how the data should be read, this information is used by the `read-mpath` function to get the correct data types.
 
 ```{r read m-Path data}
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) # sets working directory to file location
-
 data <- read_mpath(# reads data
-  file = "example_dataset.csv", # path to the data (replace with own data if desired)
-  meta_data = "meta.csv" # path to the metadata
+  file = mpath_example(file ="example_basic.csv"), # path to the data (replace with own data if desired)
+  meta_data = mpath_example("example_meta.csv") # path to the metadata
 ) 
 ```
 
@@ -88,7 +86,7 @@ We can first check the data to get a better idea of what we are working with.
 The `dataInfo()` function from the `esmtools` package provides some useful information, such as the number of columns and rows, the number of participants, the number of observations per participant, and the number of missing values.
 
 ```{r print data info}
-dataInfo(file_path="../read_mpath/example_dataset.csv", 
+dataInfo(file_path=mpath_example('example_basic.csv'),
          read_fun = read.csv2,
          idvar="connectionId", # specify the participant variable
          timevar="timeStampSent" # specify the time variable
@@ -723,11 +721,9 @@ data %>%
 Compliance is the proportion of answered beeps. It is important to have a look at this metric, to identify participants that have missed a lot of beeps. We can use the function `response_rate` from the `mpathr` package to calculate the response rate. \n
 
 ```{r compliance rate}
-source('../response_rate_functions/response_rate_functions.R') # just manually loading the response_rate_functions until the package is done
-
 response_rates <- response_rate(data = data,
                                 valid_col = answered, 
-                                by = participant)
+                                participant_col = participant)
 response_rates %>%
   group_by(participant) %>%
   ggplot(aes(x= participant, y= response_rate)) +
@@ -827,7 +823,7 @@ For the second analysis, we will eliminate participant's data if they had less t
 ```{r find participants with low compliance}
 participants_to_rm <- response_rate(data = data, # calculate response (compliance) rate
                                  valid_col = answered, 
-                                 by = participant) %>%
+                                 participant_col = participant) %>%
   filter(response_rate < 0.5) # filter out participants with a compliance rate of less than 50%
 
 print(participants_to_rm$participant) # these are the participants we will remove for the 2nd analysis
