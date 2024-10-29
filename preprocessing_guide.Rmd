@@ -1,6 +1,7 @@
 ---
 title: "Importing and preprocessing raw m-Path data with mpathr"
 date: "`r Sys.Date()`"
+author: "Lara Navarrete and Koen Niemeijer"
 output:
   html_document:
     theme: cerulean
@@ -51,6 +52,8 @@ The dataset consists of the resulting data from an ESM experiment, from 20 parti
 * Intake questionnaire: where participants consented to participate and filled the Neuroticism subscale of the Big Five Inventory (BFI) and the Satisfaction with Life Scale (SWLS).
 * Main questionnaire (administered 10 times per day): Participants answered questions about their emotions and activities.
 * Evening questionnaire (every evening): where participants  rated their emotions throughout the day.
+
+The dataset is available through the `mpath_example()` function in `mpathr` but can also be downloaded separately from Github [here](https://github.com/m-path-io/mpathr/tree/master/inst/extdata).
 
 This guide is based on the steps in the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/) and further described in the following paper: 
 
