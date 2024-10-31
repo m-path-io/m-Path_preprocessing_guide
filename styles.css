@@ -43,6 +43,27 @@ pre.sourcecode {
   margin: 0px;
 }
 
+@media only screen and (max-width: 600px) {
+	code {
+		word-wrap: break-word;
+		white-space: pre-wrap;
+	}
+	
+	table {
+		font-size: 0.8em;
+		overflow: scroll;
+		display: block;
+	}
+	
+	.MathJax span {
+		font-size: 0.95em;
+	}
+}
+
+.MathJax_Display {
+	overflow-x: scroll;
+}
+
 pre {
   border: none;
   background-image: linear-gradient(-160deg, #f8f8f8 0, #f1f1f1 100%);
@@ -64,7 +85,7 @@ pre {
 
 .toc-content h1::before {
   padding-right: .3em;
-  margin-left: -.8em;
+  margin-left: -.6em;
   color: #9ddcff;
   content: "/";
 }
@@ -82,7 +103,7 @@ pre {
 
 .toc-content h2::before {
   padding-right: .3em;
-  margin-left: -1.2em;
+  margin-left: -0.95em;
   content: "//";
   color: #9ddcff;
 }

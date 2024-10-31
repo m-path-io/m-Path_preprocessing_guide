@@ -1001,8 +1001,8 @@ In this step we will compute important variables to prepare the data for our ana
 
 We will conduct the following two analyses:
 
-1. **Analysis 1**: Do participants have more negative affect when they are alone?**
-2. **Analysis 2**: Is the evening-reported anxiety level predicted well with a combination of the mean anxiety levels and the maximum anxiety level experienced throughout the day?**
+1. **Analysis 1**: Do participants have more negative affect when they are alone?
+2. **Analysis 2**: Is the evening-reported anxiety level predicted well with a combination of the mean anxiety levels and the maximum anxiety level experienced throughout the day?
 
 ## Data preparation for analysis 1
 ### Computing affect scores
