@@ -888,7 +888,7 @@ library(scales)
 # Hour of day from answered beeps
 data |> 
   filter(answered) |> 
-  ggplot(aes(x = hms(start))) +
+  ggplot(aes(x = hms::as_hms(start))) +
   geom_histogram(bins = 100, fill = dark_mpath_palette[1]) +
   scale_x_time(
     limits = hms(c("00:00:00", "24:00:00")), 
@@ -904,7 +904,7 @@ data |>
 # Hour of day of missed beeps
 data |> 
   filter(!answered) |> 
-  ggplot(aes(x = hms(sent))) +
+  ggplot(aes(x = hms::as_hms(sent))) +
   geom_histogram(bins = 100, fill = dark_mpath_palette[2]) +
   scale_x_time(
     limits = hms(c("00:00:00", "24:00:00")), 
