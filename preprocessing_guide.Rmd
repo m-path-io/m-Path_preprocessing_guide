@@ -43,7 +43,6 @@ knitr::opts_chunk$set(
 }
 ```
 
-## Study and data collection procedure
 
 This guide implements the preprocessing of an example dataset gathered with [m-Path](https://m-Path.io/landing/) and loaded with its companion R package `mpathr`. m-Path is a platform that allows researchers to create and deploy Experience Sampling Method (ESM) studies. ESM studies are a type of longitudinal study where participants are prompted to answer questions about their emotions, activities, and context in real-time. 
 
@@ -55,9 +54,10 @@ The dataset consists of the resulting data from an ESM experiment, from 20 parti
 
 The dataset is available through the `mpath_example()` function in `mpathr` but can also be downloaded separately from Github [here](https://github.com/m-path-io/mpathr/tree/master/inst/extdata).
 
-This guide is based on the steps in the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/) and further described in the following paper: 
+This guide builds upon the framework, R tutorials, and templates for preprocessing ESM data developed by Revol et al. (2024). These resources are detailed in the associated [paper](https://journals.sagepub.com/doi/full/10.1177/25152459241256609) and the [ESM Preprocessing Gallery](https://preprocess.esmtools.com/) website. When using this work, please cite the following paper: 
 
-* Revol, J., Carlier, C., Lafit, G., Verhees, M., Sels, L., & Ceulemans, E. (in preparation). _Preprocessing ESM data: A step-by-step framework, reporting templates, and R code website._
+* Revol, J., Carlier, C., Lafit, G., Verhees, M., Sels, L., & Ceulemans, E. (2024). Preprocessing Experience-Sampling-Method Data: A Step-by-Step Framework, Tutorial Website, R Package, and Reporting Templates. _Advances in Methods and Practices in Psychological Science_, 7(4), 1–18. https://doi.org/10.1177/25152459241256609.
+
 
 ## Set up
 
